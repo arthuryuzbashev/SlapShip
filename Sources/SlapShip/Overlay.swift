@@ -37,114 +37,14 @@ final class WhipOverlay {
         root.addSublayer(scene)
 
         addWelt(to: scene, size: size, force: force)
-        addWhip(to: scene, size: size)
-        addCrack(to: scene, at: point(Keys.frames[2].tip, size), force: force)
+        WhipRenderer.play(in: scene, view: view, size: size)
+        addCrack(to: scene, at: WhipRenderer.crackPoint(size), force: force)
         addShake(to: scene, force: force)
         addBadge(to: root, size: size, pending: pending)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.9) {
             window.orderOut(nil)
             live.removeAll { $0 === window }
-        }
-    }
-
-    // MARK: Whip
-
-    private struct Frame { var grip: CGPoint; var c1: CGPoint; var c2: CGPoint; var tip: CGPoint }
-
-    /// Normalized keyframes (0...1 of the screen, origin bottom-left). Handle comes in from the bottom-right corner.
-    private enum Keys {
-        static let butt = CGPoint(x: 1.03, y: -0.06)
-        static let frames: [Frame] = [
-            Frame(grip: .init(x: 0.94, y: 0.17), c1: .init(x: 0.88, y: 0.48), c2: .init(x: 1.06, y: 0.78), tip: .init(x: 0.97, y: 0.96)),
-            Frame(grip: .init(x: 0.87, y: 0.18), c1: .init(x: 0.76, y: 0.58), c2: .init(x: 0.55, y: 0.98), tip: .init(x: 0.34, y: 0.86)),
-            Frame(grip: .init(x: 0.82, y: 0.12), c1: .init(x: 0.64, y: 0.42), c2: .init(x: 0.36, y: 0.58), tip: .init(x: 0.13, y: 0.42)),
-            Frame(grip: .init(x: 0.84, y: 0.13), c1: .init(x: 0.70, y: 0.30), c2: .init(x: 0.46, y: 0.40), tip: .init(x: 0.24, y: 0.47)),
-            Frame(grip: .init(x: 0.88, y: 0.10), c1: .init(x: 0.76, y: 0.20), c2: .init(x: 0.60, y: 0.22), tip: .init(x: 0.42, y: 0.20)),
-        ]
-        static let times: [NSNumber] = [0, 0.22, 0.48, 0.66, 1]
-    }
-
-    private static func point(_ p: CGPoint, _ size: CGSize) -> CGPoint {
-        CGPoint(x: p.x * size.width, y: p.y * size.height)
-    }
-
-    private static func lashPath(_ f: Frame, _ size: CGSize) -> CGPath {
-        let path = CGMutablePath()
-        path.move(to: point(f.grip, size))
-        path.addCurve(to: point(f.tip, size), control1: point(f.c1, size), control2: point(f.c2, size))
-        return path
-    }
-
-    private static func handlePath(_ f: Frame, _ size: CGSize) -> CGPath {
-        let path = CGMutablePath()
-        path.move(to: point(Keys.butt, size))
-        path.addLine(to: point(f.grip, size))
-        return path
-    }
-
-    private static func addWhip(to scene: CALayer, size: CGSize) {
-        let scale = max(size.width, size.height) / 1500
-        let leather = NSColor(calibratedRed: 0.62, green: 0.38, blue: 0.18, alpha: 1).cgColor
-        let edge = NSColor(calibratedRed: 0.16, green: 0.08, blue: 0.03, alpha: 1).cgColor
-        let lashPaths = Keys.frames.map { lashPath($0, size) }
-        let handlePaths = Keys.frames.map { handlePath($0, size) }
-
-        // Tapered lash: the same curve stroked several times, thick only near the grip.
-        // Dark outline first, tan leather on top, so it reads on both light and dark screens.
-        let taper: [(width: CGFloat, end: CGFloat)] = [(16, 0.2), (12, 0.42), (9, 0.65), (6, 0.86), (3, 1)]
-        let strokes = taper.map { ($0.width + 4, $0.end, edge) } + taper.map { ($0.width, $0.end, leather) }
-        var layers: [(CAShapeLayer, [CGPath])] = []
-        for (width, end, color) in strokes {
-            let l = CAShapeLayer()
-            l.path = lashPaths.last
-            l.strokeColor = color
-            l.fillColor = nil
-            l.lineWidth = width * scale
-            l.lineCap = .round
-            l.strokeEnd = end
-            l.shadowColor = NSColor.black.cgColor
-            l.shadowOpacity = 0.35
-            l.shadowRadius = 6
-            l.shadowOffset = CGSize(width: 0, height: -4)
-            scene.addSublayer(l)
-            layers.append((l, lashPaths))
-        }
-
-        let handle = CAShapeLayer()
-        handle.path = handlePaths.last
-        handle.strokeColor = NSColor(calibratedRed: 0.12, green: 0.06, blue: 0.03, alpha: 1).cgColor
-        handle.lineWidth = 30 * scale
-        handle.lineCap = .round
-        handle.shadowOpacity = 0.4
-        handle.shadowRadius = 8
-        scene.addSublayer(handle)
-        layers.append((handle, handlePaths))
-
-        for (layer, paths) in layers {
-            let move = CAKeyframeAnimation(keyPath: "path")
-            move.values = paths
-            move.keyTimes = Keys.times
-            move.timingFunctions = [
-                CAMediaTimingFunction(name: .easeIn),
-                CAMediaTimingFunction(name: .easeIn),
-                CAMediaTimingFunction(name: .easeOut),
-                CAMediaTimingFunction(name: .easeInEaseOut),
-            ]
-            move.duration = duration
-
-            let fade = CABasicAnimation(keyPath: "opacity")
-            fade.fromValue = 1
-            fade.toValue = 0
-            fade.beginTime = duration
-            fade.duration = 0.35
-
-            let group = CAAnimationGroup()
-            group.animations = [move, fade]
-            group.duration = duration + 0.35
-            group.fillMode = .forwards
-            group.isRemovedOnCompletion = false
-            layer.add(group, forKey: "lash")
         }
     }
 
