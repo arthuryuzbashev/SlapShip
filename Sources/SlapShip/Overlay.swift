@@ -1,9 +1,20 @@
 import AppKit
 import QuartzCore
 
-/// Full-screen, click-through overlay that plays one whip lash.
+/// Full-screen, click-through overlay that plays the whip. A slap while it's still on screen
+/// strikes again with the same whip instead of bringing in a second one.
 final class WhipOverlay {
-    private static var live: [NSWindow] = []
+    private final class Stage {
+        let window: NSWindow, root: CALayer, scene: CALayer, whip: WhipRenderer, size: CGSize
+        var badge: CALayer?
+        var lashes = 0
+
+        init(window: NSWindow, root: CALayer, scene: CALayer, whip: WhipRenderer, size: CGSize) {
+            self.window = window; self.root = root; self.scene = scene; self.whip = whip; self.size = size
+        }
+    }
+
+    private static var stage: Stage?
 
     static let duration: CFTimeInterval = 0.42
     /// Moment of the crack inside the lash, matches the sound's whoosh length.
@@ -11,6 +22,13 @@ final class WhipOverlay {
 
     /// Plays the lash on the screen under the mouse. `pending` is shown in the badge.
     static func lash(force: Double, pending: Int) {
+        if let stage, stage.whip.isAlive {
+            hit(stage, crack: stage.whip.restrike(), force: force, pending: pending)
+            return
+        }
+        stage?.window.orderOut(nil)
+        stage = nil
+
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         guard let screen else { return }
@@ -28,7 +46,6 @@ final class WhipOverlay {
         view.wantsLayer = true
         window.contentView = view
         window.orderFrontRegardless()
-        live.append(window)
 
         guard let root = view.layer else { return }
         let size = screen.frame.size
@@ -36,53 +53,75 @@ final class WhipOverlay {
         scene.frame = root.bounds
         root.addSublayer(scene)
 
-        addWelt(to: scene, size: size, force: force)
-        WhipRenderer.play(in: scene, view: view, size: size)
-        addCrack(to: scene, at: WhipRenderer.crackPoint(size), force: force)
-        addShake(to: scene, force: force)
-        addBadge(to: root, size: size, pending: pending)
+        let played = WhipRenderer.play(in: scene, view: view, size: size)
+        let fresh = Stage(window: window, root: root, scene: scene, whip: played.whip, size: size)
+        stage = fresh
+        hit(fresh, crack: (played.tip, played.time), force: force, pending: pending)
+    }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.9) {
-            window.orderOut(nil)
-            live.removeAll { $0 === window }
+    private static func hit(_ s: Stage, crack: (tip: CGPoint, time: CFTimeInterval), force: Double, pending: Int) {
+        addWelt(to: s.scene, size: s.size, force: force)
+        addCrack(to: s.scene, at: crack.tip, begin: crack.time, force: force)
+        addShake(to: s.scene, begin: crack.time, force: force)
+        s.badge?.removeFromSuperlayer()
+        s.badge = addBadge(to: s.root, size: s.size, pending: pending)
+
+        // Only the latest lash closes the window, an earlier timer must not cut the new strike short.
+        s.lashes += 1
+        let lashes = s.lashes
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(1.9, WhipRenderer.lifetime + 0.1)) {
+            guard stage === s, s.lashes == lashes else { return }
+            s.window.orderOut(nil)
+            stage = nil
         }
     }
 
     // MARK: Crack, shake, welt
 
-    private static func addCrack(to scene: CALayer, at tip: CGPoint, force: Double) {
-        let begin = CACurrentMediaTime() + crackAt
+    private static func addCrack(to scene: CALayer, at tip: CGPoint, begin: CFTimeInterval, force: Double) {
         let big = 1 + force
 
+        // A real crack is a tiny sonic boom: a quick pop of light and a thin pressure ring, not a fireball.
         let flash = CAShapeLayer()
-        let r: CGFloat = 26
+        let r: CGFloat = 7
         flash.path = CGPath(ellipseIn: CGRect(x: -r, y: -r, width: 2 * r, height: 2 * r), transform: nil)
         flash.position = tip
         flash.fillColor = NSColor.white.cgColor
-        flash.shadowColor = NSColor(calibratedRed: 1, green: 0.85, blue: 0.5, alpha: 1).cgColor
-        flash.shadowOpacity = 1
-        flash.shadowRadius = 18
+        flash.shadowColor = NSColor(calibratedRed: 1, green: 0.9, blue: 0.7, alpha: 1).cgColor
+        flash.shadowOpacity = 0.9
+        flash.shadowRadius = 8
         flash.opacity = 0
         scene.addSublayer(flash)
-        animate(flash, begin: begin, scale: (0.2, 2.4 * big), opacity: [0, 1, 0], duration: 0.22)
+        animate(flash, begin: begin, scale: (0.3, 1.4 * big), opacity: [0, 0.9, 0], duration: 0.12)
 
-        // Spark lines radiating from the tip.
+        let ring = CAShapeLayer()
+        let rr: CGFloat = 30
+        ring.path = CGPath(ellipseIn: CGRect(x: -rr, y: -rr, width: 2 * rr, height: 2 * rr), transform: nil)
+        ring.position = tip
+        ring.fillColor = nil
+        ring.strokeColor = NSColor(white: 1, alpha: 0.55).cgColor
+        ring.lineWidth = 1.2
+        ring.opacity = 0
+        scene.addSublayer(ring)
+        animate(ring, begin: begin, scale: (0.15, 1.6 * big), opacity: [0, 0.8, 0], duration: 0.3)
+
+        // A few short streaks, the frayed cracker snapping.
         let sparks = CAShapeLayer()
         let path = CGMutablePath()
-        for i in 0..<10 {
-            let a = Double(i) / 10 * 2 * .pi + Double.random(in: -0.2...0.2)
-            let inner = CGFloat.random(in: 18...28), outer = CGFloat.random(in: 55...90)
+        for i in 0..<7 {
+            let a = Double(i) / 7 * 2 * .pi + Double.random(in: -0.3...0.3)
+            let inner = CGFloat.random(in: 6...10), outer = CGFloat.random(in: 18...30)
             path.move(to: CGPoint(x: cos(a) * inner, y: sin(a) * inner))
             path.addLine(to: CGPoint(x: cos(a) * outer, y: sin(a) * outer))
         }
         sparks.path = path
         sparks.position = tip
-        sparks.strokeColor = NSColor(calibratedRed: 1, green: 0.93, blue: 0.7, alpha: 1).cgColor
-        sparks.lineWidth = 3
+        sparks.strokeColor = NSColor(calibratedRed: 1, green: 0.95, blue: 0.85, alpha: 0.9).cgColor
+        sparks.lineWidth = 1.3
         sparks.lineCap = .round
         sparks.opacity = 0
         scene.addSublayer(sparks)
-        animate(sparks, begin: begin, scale: (0.5, 1.5 * big), opacity: [0, 1, 0], duration: 0.28)
+        animate(sparks, begin: begin, scale: (0.6, 1.3 * big), opacity: [0, 1, 0], duration: 0.16)
 
         let word = CATextLayer()
         word.string = force > 0.6 ? "CRACK!!" : "CRACK!"
@@ -120,13 +159,13 @@ final class WhipOverlay {
         layer.add(g, forKey: "crack")
     }
 
-    private static func addShake(to scene: CALayer, force: Double) {
+    private static func addShake(to scene: CALayer, begin: CFTimeInterval, force: Double) {
         let amp = 6 + 14 * force
         let shake = CAKeyframeAnimation(keyPath: "position")
         let c = scene.position
         shake.values = [c, CGPoint(x: c.x - amp, y: c.y + amp * 0.4), CGPoint(x: c.x + amp * 0.8, y: c.y - amp * 0.5),
                         CGPoint(x: c.x - amp * 0.5, y: c.y + amp * 0.2), CGPoint(x: c.x + amp * 0.2, y: c.y), c]
-        shake.beginTime = CACurrentMediaTime() + crackAt
+        shake.beginTime = begin
         shake.duration = 0.28
         scene.add(shake, forKey: "shake")
     }
@@ -141,7 +180,8 @@ final class WhipOverlay {
         welt.startPoint = CGPoint(x: 0.5, y: 0.5)
         welt.endPoint = CGPoint(x: 1, y: 1)
         welt.opacity = 0
-        scene.addSublayer(welt)
+        // Under the whip, also when it's added for a repeat strike.
+        scene.insertSublayer(welt, at: 0)
         let o = CAKeyframeAnimation(keyPath: "opacity")
         o.values = [0, Float(0.5 + 0.5 * force), 0]
         o.keyTimes = [0, 0.15, 1]
@@ -154,7 +194,7 @@ final class WhipOverlay {
 
     // MARK: Badge
 
-    private static func addBadge(to root: CALayer, size: CGSize, pending: Int) {
+    private static func addBadge(to root: CALayer, size: CGSize, pending: Int) -> CALayer {
         let text = "🩸 ×\(pending) for Claude"
         let font = NSFont.systemFont(ofSize: 17, weight: .bold)
         let width = (text as NSString).size(withAttributes: [.font: font]).width + 36
@@ -192,5 +232,6 @@ final class WhipOverlay {
         g.fillMode = .both
         g.isRemovedOnCompletion = false
         pill.add(g, forKey: "badge")
+        return pill
     }
 }
